@@ -199,6 +199,45 @@
     font-size: 14px;
     padding: 20px 0;
   }
+  .pin-gate {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    z-index: 100;
+  }
+  .pin-box {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 24px;
+    width: 100%;
+    max-width: 320px;
+    text-align: center;
+  }
+  .pin-box h2 {
+    font-size: 18px;
+    margin: 0 0 6px;
+  }
+  .pin-box p {
+    font-size: 13px;
+    color: var(--text-sub);
+    margin: 0 0 16px;
+  }
+  #pin-input {
+    text-align: center;
+    letter-spacing: 6px;
+    font-size: 18px;
+    margin-bottom: 12px;
+  }
+  .pin-error {
+    color: var(--expense);
+    font-size: 13px;
+    margin: 10px 0 0;
+  }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #16181d;
@@ -219,7 +258,18 @@
 </style>
 </head>
 <body>
-<div class="wrap">
+
+<div class="pin-gate" id="pin-gate">
+  <div class="pin-box">
+    <h2>かんたん家計簿</h2>
+    <p>PINコードを入力してください</p>
+    <input type="password" id="pin-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="••••">
+    <button type="button" class="submit" id="pin-submit">開く</button>
+    <p class="pin-error" id="pin-error" style="display:none;">PINが違います</p>
+  </div>
+</div>
+
+<div class="wrap" id="app" style="display:none;">
   <h1>かんたん家計簿</h1>
 
   <div class="card">
@@ -275,17 +325,73 @@
   </div>
 </div>
 
-<script src="data/entries.js"></script>
-<script>
-(function () {
-  const STORAGE_KEY = 'kakeibo-entries';
-  const SEEN_CLAUDE_IDS_KEY = 'kakeibo-claude-seen-ids';
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
+import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 
-  const CATEGORIES = {
-    expense: ['食費', '日用品', '交通費', '娯楽', '医療', '固定費', 'その他'],
-    income: ['給与', '副収入', 'その他']
-  };
+const firebaseConfig = {
+  apiKey: "AIzaSyCPoIeu3nak3PKLIYoOy2Ce094MjiiSCrQ",
+  authDomain: "kakeibo-app-ac30a.firebaseapp.com",
+  projectId: "kakeibo-app-ac30a",
+  storageBucket: "kakeibo-app-ac30a.firebasestorage.app",
+  messagingSenderId: "570947851408",
+  appId: "1:570947851408:web:ddfe510991dfb105efb415"
+};
 
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const entriesCol = collection(db, 'entries');
+
+// PINそのものではなくSHA-256ハッシュを埋め込む。UI経由のアクセスを妨げるだけの簡易的な鍵であり、
+// Firestoreのセキュリティルール自体はentriesコレクションを誰でも読み書きできる設定にしている。
+const PIN_HASH = '13c6f7d6022a155ce7e38d7485faf6830594bae46f2120dbe04c795ec4cc0e20';
+const UNLOCK_KEY = 'kakeibo-unlocked';
+
+const CATEGORIES = {
+  expense: ['食費', '日用品', '交通費', '娯楽', '医療', '固定費', 'その他'],
+  income: ['給与', '副収入', 'その他']
+};
+
+const pinGate = document.getElementById('pin-gate');
+const appEl = document.getElementById('app');
+const pinInput = document.getElementById('pin-input');
+const pinSubmit = document.getElementById('pin-submit');
+const pinError = document.getElementById('pin-error');
+
+async function sha256Hex(text) {
+  const data = new TextEncoder().encode(text);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function tryUnlock() {
+  const hash = await sha256Hex(pinInput.value.trim());
+  if (hash === PIN_HASH) {
+    localStorage.setItem(UNLOCK_KEY, '1');
+    unlock();
+  } else {
+    pinError.style.display = 'block';
+    pinInput.value = '';
+    pinInput.focus();
+  }
+}
+
+function unlock() {
+  pinGate.style.display = 'none';
+  appEl.style.display = '';
+  initApp();
+}
+
+pinSubmit.addEventListener('click', tryUnlock);
+pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryUnlock(); });
+
+if (localStorage.getItem(UNLOCK_KEY) === '1') {
+  unlock();
+} else {
+  pinInput.focus();
+}
+
+function initApp() {
   const form = document.getElementById('entry-form');
   const dateInput = document.getElementById('date');
   const amountInput = document.getElementById('amount');
@@ -300,48 +406,7 @@
   const totalBalanceEl = document.getElementById('total-balance');
 
   let currentType = 'expense';
-
-  function loadEntries() {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
-    } catch (e) {
-      return [];
-    }
-  }
-
-  function saveEntries(entries) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-  }
-
-  // Claudeとのチャットで data/entries.js に追記されたエントリーを取り込む。
-  // 一度取り込んだIDは記憶しておき、ブラウザ側で削除した後に復活しないようにする。
-  function mergeClaudeEntries() {
-    const incoming = window.CLAUDE_ENTRIES || [];
-    if (!incoming.length) return;
-
-    let seen = [];
-    try {
-      seen = JSON.parse(localStorage.getItem(SEEN_CLAUDE_IDS_KEY)) || [];
-    } catch (e) {
-      seen = [];
-    }
-    const seenSet = new Set(seen);
-
-    const entries = loadEntries();
-    let added = false;
-
-    incoming.forEach(entry => {
-      if (seenSet.has(entry.id)) return;
-      entries.push(entry);
-      seenSet.add(entry.id);
-      added = true;
-    });
-
-    if (added) {
-      saveEntries(entries);
-      localStorage.setItem(SEEN_CLAUDE_IDS_KEY, JSON.stringify(Array.from(seenSet)));
-    }
-  }
+  let allEntries = [];
 
   function formatYen(n) {
     return '¥' + n.toLocaleString('ja-JP');
@@ -393,15 +458,14 @@
   }
 
   function render() {
-    const entries = loadEntries();
-    populateMonthFilter(entries);
+    populateMonthFilter(allEntries);
 
     const selectedMonth = monthFilter.value;
     const filtered = selectedMonth === 'all'
-      ? entries
-      : entries.filter(e => e.date.slice(0, 7) === selectedMonth);
+      ? allEntries
+      : allEntries.filter(e => e.date.slice(0, 7) === selectedMonth);
 
-    const sorted = [...filtered].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+    const sorted = [...filtered].sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0));
 
     listEl.innerHTML = '';
     emptyMsg.style.display = sorted.length ? 'none' : 'block';
@@ -430,9 +494,7 @@
       delBtn.textContent = '×';
       delBtn.title = '削除';
       delBtn.addEventListener('click', () => {
-        const all = loadEntries().filter(e => e.id !== entry.id);
-        saveEntries(all);
-        render();
+        deleteDoc(doc(db, 'entries', entry.id));
       });
 
       li.append(dateSpan, catSpan, memoSpan, amountSpan, delBtn);
@@ -450,36 +512,40 @@
     btn.addEventListener('click', () => setType(btn.dataset.type));
   });
 
-  form.addEventListener('submit', (e) => {
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const amount = parseInt(amountInput.value, 10);
     if (!amount || amount <= 0) return;
 
-    const entries = loadEntries();
-    entries.push({
-      id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-      date: dateInput.value || todayStr(),
-      type: currentType,
-      category: categorySelect.value,
-      amount,
-      memo: memoInput.value.trim(),
-      createdAt: Date.now()
-    });
-    saveEntries(entries);
-
-    amountInput.value = '';
-    memoInput.value = '';
-    amountInput.focus();
-    render();
+    const submitBtn = form.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    try {
+      await addDoc(entriesCol, {
+        date: dateInput.value || todayStr(),
+        type: currentType,
+        category: categorySelect.value,
+        amount,
+        memo: memoInput.value.trim(),
+        createdAt: Date.now()
+      });
+      amountInput.value = '';
+      memoInput.value = '';
+      amountInput.focus();
+    } finally {
+      submitBtn.disabled = false;
+    }
   });
 
   monthFilter.addEventListener('change', render);
 
   dateInput.value = todayStr();
   setType('expense');
-  mergeClaudeEntries();
-  render();
-})();
+
+  onSnapshot(entriesCol, (snapshot) => {
+    allEntries = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    render();
+  });
+}
 </script>
 </body>
 </html>
