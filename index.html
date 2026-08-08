@@ -39,7 +39,35 @@
   }
   h1 {
     font-size: 22px;
-    margin: 0 0 20px;
+    margin: 0;
+  }
+  .app-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    gap: 12px;
+  }
+  .user-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-sub);
+    flex-shrink: 0;
+  }
+  .user-badge #user-name {
+    font-weight: 600;
+    color: var(--text);
+  }
+  #switch-user {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text-sub);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
   }
   .card {
     background: var(--card-bg);
@@ -261,6 +289,7 @@
     }
     input, select, .type-toggle button { background: #262a32; color: var(--text); }
     .li-cat { background: #2a2e36; }
+    #switch-user { background: #262a32; }
   }
 </style>
 </head>
@@ -277,7 +306,13 @@
 </div>
 
 <div class="wrap" id="app" style="display:none;">
-  <h1>かんたん家計簿</h1>
+  <div class="app-header">
+    <h1>かんたん家計簿</h1>
+    <div class="user-badge">
+      <span id="user-name"></span>
+      <button type="button" id="switch-user">切替</button>
+    </div>
+  </div>
 
   <div class="card">
     <div class="summary">
@@ -334,7 +369,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
-import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
+import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCPoIeu3nak3PKLIYoOy2Ce094MjiiSCrQ",
@@ -351,8 +386,13 @@ const entriesCol = collection(db, 'entries');
 
 // PINそのものではなくSHA-256ハッシュを埋め込む。UI経由のアクセスを妨げるだけの簡易的な鍵であり、
 // Firestoreのセキュリティルール自体はentriesコレクションを誰でも読み書きできる設定にしている。
-const PIN_HASH = '13c6f7d6022a155ce7e38d7485faf6830594bae46f2120dbe04c795ec4cc0e20';
-const UNLOCK_KEY = 'kakeibo-unlocked';
+// PINごとにownerを紐づけ、記録はownerで絞り込むことで人ごとに完全に別の家計簿として見せている。
+const PIN_USERS = [
+  { hash: '13c6f7d6022a155ce7e38d7485faf6830594bae46f2120dbe04c795ec4cc0e20', owner: 'ryosuke', name: 'りょうすけ' },
+  { hash: '79d9d8f002c1c955fa0d21eeaaf2ebf03c3a878d2fdcb6e78d915b3ed81cc886', owner: 'koyama', name: '小山' },
+  { hash: '2ec42bc1f3e672fc1cf7fdcfc23246415dcf20f03c0d4a5bbbd92a185708f5b7', owner: 'rio', name: 'りおちゃん' }
+];
+const OWNER_KEY = 'kakeibo-owner';
 
 const CATEGORIES = {
   expense: ['食費', '日用品', '交通費', '娯楽', '医療', '固定費', 'その他'],
@@ -373,9 +413,10 @@ async function sha256Hex(text) {
 
 async function tryUnlock() {
   const hash = await sha256Hex(pinInput.value.trim());
-  if (hash === PIN_HASH) {
-    localStorage.setItem(UNLOCK_KEY, '1');
-    unlock();
+  const user = PIN_USERS.find(u => u.hash === hash);
+  if (user) {
+    localStorage.setItem(OWNER_KEY, user.owner);
+    unlock(user);
   } else {
     pinError.style.display = 'block';
     pinInput.value = '';
@@ -383,22 +424,33 @@ async function tryUnlock() {
   }
 }
 
-function unlock() {
+function unlock(user) {
   pinGate.style.display = 'none';
   appEl.style.display = '';
-  initApp();
+  pinInput.value = '';
+  pinError.style.display = 'none';
+  initApp(user);
 }
 
 pinSubmit.addEventListener('click', tryUnlock);
 pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryUnlock(); });
 
-if (localStorage.getItem(UNLOCK_KEY) === '1') {
-  unlock();
+const savedOwner = localStorage.getItem(OWNER_KEY);
+const savedUser = PIN_USERS.find(u => u.owner === savedOwner);
+if (savedUser) {
+  unlock(savedUser);
 } else {
   pinInput.focus();
 }
 
-function initApp() {
+function initApp(user) {
+  document.getElementById('user-name').textContent = user.name;
+  document.getElementById('switch-user').addEventListener('click', () => {
+    localStorage.removeItem(OWNER_KEY);
+    location.reload();
+  });
+  const ownedEntriesQuery = query(entriesCol, where('owner', '==', user.owner));
+
   const form = document.getElementById('entry-form');
   const dateInput = document.getElementById('date');
   const amountInput = document.getElementById('amount');
@@ -533,7 +585,8 @@ function initApp() {
         category: categorySelect.value,
         amount,
         memo: memoInput.value.trim(),
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        owner: user.owner
       });
       amountInput.value = '';
       memoInput.value = '';
@@ -548,7 +601,7 @@ function initApp() {
   dateInput.value = todayStr();
   setType('expense');
 
-  onSnapshot(entriesCol, (snapshot) => {
+  onSnapshot(ownedEntriesQuery, (snapshot) => {
     allEntries = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     render();
   });
