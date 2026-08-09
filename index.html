@@ -388,9 +388,7 @@ const entriesCol = collection(db, 'entries');
 // Firestoreのセキュリティルール自体はentriesコレクションを誰でも読み書きできる設定にしている。
 // PINごとにownerを紐づけ、記録はownerで絞り込むことで人ごとに完全に別の家計簿として見せている。
 const PIN_USERS = [
-  { hash: '13c6f7d6022a155ce7e38d7485faf6830594bae46f2120dbe04c795ec4cc0e20', owner: 'ryosuke', name: 'りょうすけ' },
-  { hash: '79d9d8f002c1c955fa0d21eeaaf2ebf03c3a878d2fdcb6e78d915b3ed81cc886', owner: 'koyama', name: '小山' },
-  { hash: '2ec42bc1f3e672fc1cf7fdcfc23246415dcf20f03c0d4a5bbbd92a185708f5b7', owner: 'rio', name: 'りおちゃん' }
+  { hash: '13c6f7d6022a155ce7e38d7485faf6830594bae46f2120dbe04c795ec4cc0e20', owner: 'ryosuke', name: 'りょうすけ' }
 ];
 const OWNER_KEY = 'kakeibo-owner';
 
